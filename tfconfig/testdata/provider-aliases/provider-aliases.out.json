@@ -5,7 +5,11 @@
   "required_providers": {
     "bar": {},
     "baz": {},
-    "bleep": {},
+    "bleep": {
+      "aliases": [
+        {"name": "bleep", "alias": "bloop"}
+      ]
+    },
     "empty": {},
     "foo": {}
   },

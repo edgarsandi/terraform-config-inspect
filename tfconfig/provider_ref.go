@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -17,8 +18,9 @@ type ProviderRef struct {
 }
 
 type ProviderRequirement struct {
-	Source             string   `json:"source,omitempty"`
-	VersionConstraints []string `json:"version_constraints,omitempty"`
+	Source               string        `json:"source,omitempty"`
+	VersionConstraints   []string      `json:"version_constraints,omitempty"`
+	ConfigurationAliases []ProviderRef `json:"aliases,omitempty"`
 }
 
 func decodeRequiredProvidersBlock(block *hcl.Block) (map[string]*ProviderRequirement, hcl.Diagnostics) {
@@ -85,8 +87,8 @@ func decodeRequiredProvidersBlock(block *hcl.Block) (map[string]*ProviderRequire
 				}
 
 			case "source":
-				source, err := kv.Value.Value(nil)
-				if err != nil || !source.Type().Equals(cty.String) {
+				source, valDiags := kv.Value.Value(nil)
+				if valDiags.HasErrors() || !source.Type().Equals(cty.String) {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
 						Summary:  "Unsuitable value type",
@@ -99,6 +101,13 @@ func decodeRequiredProvidersBlock(block *hcl.Block) (map[string]*ProviderRequire
 				if !source.IsNull() {
 					pr.Source = source.AsString()
 				}
+			case "configuration_aliases":
+				aliases, valDiags := decodeConfigurationAliases(kv.Value)
+				if valDiags.HasErrors() {
+					diags = append(diags, valDiags...)
+					continue
+				}
+				pr.ConfigurationAliases = append(pr.ConfigurationAliases, aliases...)
 			}
 
 			reqs[name] = &pr
@@ -106,4 +115,62 @@ func decodeRequiredProvidersBlock(block *hcl.Block) (map[string]*ProviderRequire
 	}
 
 	return reqs, diags
+}
+
+func decodeConfigurationAliases(value hcl.Expression) ([]ProviderRef, hcl.Diagnostics) {
+	aliases := make([]ProviderRef, 0)
+	var diags hcl.Diagnostics
+
+	tuple, ok := value.(*hclsyntax.TupleConsExpr)
+	if !ok {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unsuitable value type",
+			Detail:   "Unsuitable value: tuple required",
+			Subject:  value.Range().Ptr(),
+		})
+		return aliases, diags
+	}
+
+	for _, expr := range tuple.Exprs {
+		alias, ok := expr.(*hclsyntax.ScopeTraversalExpr)
+		if !ok {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unsuitable value type for alias",
+				Detail:   "Unsuitable type of alias: traversal required",
+				Subject:  expr.Range().Ptr(),
+			})
+			continue
+		}
+
+		traversal := alias.AsTraversal()
+		if len(traversal) != 2 {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unexpected alias identification",
+				Detail:   "Expected identification in localname.alias format",
+				Subject:  expr.Range().Ptr(),
+			})
+			continue
+		}
+
+		tAttr, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unexpected alias identification",
+				Detail:   "Expected second part of identification to be the alias (string)",
+				Subject:  expr.Range().Ptr(),
+			})
+			continue
+		}
+
+		aliases = append(aliases, ProviderRef{
+			Name:  traversal.RootName(),
+			Alias: tAttr.Name,
+		})
+	}
+
+	return aliases, diags
 }
